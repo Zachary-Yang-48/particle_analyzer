@@ -15,8 +15,11 @@ Examples:
         # Manually specify: 100 μm = 150 pixels
 
 Outputs:
-    - <image_name>_analyzed.png : Annotated image with detected particles
-    - <image_name>_measurements.csv : CSV with all particle measurements
+    - <image_name>_analyzed.xlsx : Excel file with sheets:
+        - 'image' : Annotated image with detected particles
+        - 'scale_bar' : Scale bar visualization (if auto-detected)
+        - 'scale_bar_crop' : Scale bar crop region (if auto-detected)
+        - 'measurements' : Particle measurement data
 """
 
 import cv2
@@ -28,6 +31,10 @@ from skimage.feature import peak_local_max
 import argparse
 import os
 from pathlib import Path
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image as XLImage
+from PIL import Image
+import io
 
 
 def detect_scale_bar(gray_image, search_regions=None):
@@ -423,6 +430,7 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
     print(f"Image size: {img.shape[1]} x {img.shape[0]} pixels")
     
     # Auto-detect scale bar if not provided
+    detection = None
     if scale_bar_pixels is None:
         print("\nAuto-detecting scale bar...")
         detection = detect_scale_bar(gray)
@@ -435,18 +443,6 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
                 print(f"  (Hough estimate was {detection['hough_length']} px, refined to {scale_bar_pixels} px)")
             print(f"  Location: ({detection['x1']:.0f}, {detection['y1']:.0f}) to ({detection['x2']:.0f}, {detection['y2']:.0f})")
             
-            # Save scale bar visualization
-            scale_vis_path = out_dir / f"{input_path.stem}_scale_bar.png"
-            visualize_scale_bar_detection(img, detection, scale_vis_path)
-            print(f"  Saved: {scale_vis_path}")
-            
-            # Save cropped scale bar region
-            crop = extract_scale_bar_crop(img, detection)
-            if crop is not None:
-                crop_path = out_dir / f"{input_path.stem}_scale_bar_crop.png"
-                cv2.imwrite(str(crop_path), crop)
-                print(f"  Saved crop: {crop_path}")
-            
             if not non_interactive:
                 # Ask for confirmation
                 print(f"\n  Detected: {scale_bar_pixels} pixels = {scale_bar_um} μm")
@@ -454,9 +450,11 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
                 
                 if response.lower() == 'n':
                     scale_bar_pixels = float(input("  Enter correct scale bar length in pixels: "))
+                    detection = None  # Clear detection if user overrides
                 elif response and response.lower() != 'y':
                     try:
                         scale_bar_pixels = float(response)
+                        detection = None  # Clear detection if user overrides
                     except ValueError:
                         pass  # Keep detected value
         else:
@@ -496,17 +494,72 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
     
     base_name = input_path.stem
     
-    # Annotated image
+    # Create annotated image
     annotated = create_annotated_image(img, particles)
-    annotated_path = output_dir / f"{base_name}_analyzed.png"
-    cv2.imwrite(str(annotated_path), annotated)
-    print(f"\nSaved annotated image: {annotated_path}")
     
-    # CSV
+    # Create DataFrame with measurements
     df = create_measurements_csv(particles, um_per_pixel)
-    csv_path = output_dir / f"{base_name}_measurements.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"Saved measurements: {csv_path}")
+    
+    # Save to Excel file with multiple sheets
+    excel_path = output_dir / f"{base_name}_analyzed.xlsx"
+    
+    # Write DataFrame to Excel first (creates workbook)
+    with pd.ExcelWriter(str(excel_path), engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='measurements', index=False)
+    
+    # Open the workbook to add image sheets
+    wb = load_workbook(str(excel_path))
+    
+    # Helper function to add image to worksheet
+    def add_image_to_sheet(worksheet, image_array, sheet_name, max_width=1200, max_height=800):
+        """Add an image (numpy array) to an Excel worksheet."""
+        # Convert BGR to RGB for PIL
+        if len(image_array.shape) == 3:
+            image_rgb = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
+        else:
+            image_rgb = cv2.cvtColor(image_array, cv2.COLOR_GRAY2RGB)
+        
+        pil_image = Image.fromarray(image_rgb)
+        
+        # Save PIL image to bytes
+        img_bytes = io.BytesIO()
+        pil_image.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
+        # Add image to worksheet
+        xl_img = XLImage(img_bytes)
+        
+        # Scale image to fit
+        if xl_img.width > max_width or xl_img.height > max_height:
+            scale = min(max_width / xl_img.width, max_height / xl_img.height)
+            xl_img.width = int(xl_img.width * scale)
+            xl_img.height = int(xl_img.height * scale)
+        
+        worksheet.add_image(xl_img, 'A1')
+        
+        # Adjust column width
+        worksheet.column_dimensions['A'].width = max(10, xl_img.width / 7)
+    
+    # Add 'image' sheet with annotated image
+    ws_image = wb.create_sheet("image")
+    add_image_to_sheet(ws_image, annotated, "image")
+    
+    # Add scale bar sheets if detection was performed
+    if detection is not None:
+        # Add 'scale_bar' sheet
+        scale_bar_vis = visualize_scale_bar_detection(img, detection, None)
+        ws_scale_bar = wb.create_sheet("scale_bar")
+        add_image_to_sheet(ws_scale_bar, scale_bar_vis, "scale_bar")
+        
+        # Add 'scale_bar_crop' sheet
+        crop = extract_scale_bar_crop(img, detection)
+        if crop is not None:
+            ws_crop = wb.create_sheet("scale_bar_crop")
+            add_image_to_sheet(ws_crop, crop, "scale_bar_crop", max_width=600, max_height=400)
+    
+    # Save workbook
+    wb.save(str(excel_path))
+    print(f"\nSaved Excel file with all outputs: {excel_path}")
     
     return df
 
