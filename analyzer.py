@@ -34,7 +34,8 @@ def detect_scale_bar(gray_image, search_regions=None):
     """
     Attempt to auto-detect the scale bar in the image.
     
-    Looks for horizontal lines in corners of the image.
+    Uses inner-edge detection for more accurate measurement
+    (measures between inner edges of first and last tick marks).
     
     Args:
         gray_image: Grayscale image
@@ -42,7 +43,7 @@ def detect_scale_bar(gray_image, search_regions=None):
                        Default: all four corners
     
     Returns:
-        dict with 'length_pixels', 'x1', 'y1', 'x2', 'y2', 'roi'
+        dict with 'length_pixels', 'x1', 'y1', 'x2', 'y2', 'roi', 'method'
         or None if not found
     """
     h, w = gray_image.shape
@@ -64,10 +65,8 @@ def detect_scale_bar(gray_image, search_regions=None):
     for y1, y2, x1, x2 in search_regions:
         roi = gray_image[y1:y2, x1:x2]
         
-        # Edge detection
+        # First, use Hough to find approximate location of scale bar
         edges = cv2.Canny(roi, 50, 150)
-        
-        # Detect lines using Hough transform
         lines = cv2.HoughLinesP(
             edges, 1, np.pi / 180,
             threshold=30,
@@ -86,22 +85,73 @@ def detect_scale_bar(gray_image, search_regions=None):
             if not (angle < 3 or angle > 177):
                 continue
             
-            length = np.sqrt((lx2 - lx1) ** 2 + (ly2 - ly1) ** 2)
+            hough_length = np.sqrt((lx2 - lx1) ** 2 + (ly2 - ly1) ** 2)
             
             # Scale bars are typically 50-300 pixels
-            if length < 40 or length > 400:
+            if hough_length < 40 or hough_length > 400:
                 continue
             
-            if length > best_length:
-                best_length = length
+            if hough_length > best_length:
+                best_length = hough_length
+                bar_y = (ly1 + ly2) // 2
+                
+                # Extract just the scale bar region (with small padding)
+                padding = 15
+                local_x1 = max(0, min(lx1, lx2) - padding)
+                local_x2 = min(roi.shape[1], max(lx1, lx2) + padding)
+                
+                # Sample intensity along the bar in this local region
+                profile = roi[bar_y, local_x1:local_x2]
+                
+                # Find dark regions using Otsu or fixed threshold
+                # Scale bar pixels are typically much darker than background
+                profile_min, profile_max = profile.min(), profile.max()
+                threshold = profile_min + (profile_max - profile_min) * 0.5
+                
+                dark_mask = profile < threshold
+                
+                # Find transitions
+                transitions = np.diff(dark_mask.astype(int))
+                rising_edges = np.where(transitions == 1)[0]   # Light to dark
+                falling_edges = np.where(transitions == -1)[0]  # Dark to light
+                
+                inner_length = None
+                if len(falling_edges) >= 2 and len(rising_edges) >= 2:
+                    # Inner measurement: from first falling edge to last rising edge
+                    inner_start = falling_edges[0]
+                    inner_end = rising_edges[-1]
+                    inner_length = inner_end - inner_start
+                    
+                    # Convert back to ROI coordinates
+                    abs_inner_start = local_x1 + inner_start
+                    abs_inner_end = local_x1 + inner_end
+                    
+                    # Sanity check: inner should be close to Hough length (within 10%)
+                    if abs(inner_length - hough_length) < hough_length * 0.10:
+                        best_result = {
+                            'length_pixels': inner_length,
+                            'x1': x1 + abs_inner_start,
+                            'y1': y1 + bar_y,
+                            'x2': x1 + abs_inner_end,
+                            'y2': y1 + bar_y,
+                            'region': (y1, y2, x1, x2),
+                            'roi': roi.copy(),
+                            'method': 'inner_edge',
+                            'hough_length': round(hough_length)
+                        }
+                        best_length = inner_length
+                        continue
+                
+                # Fall back to Hough measurement
                 best_result = {
-                    'length_pixels': round(length),
+                    'length_pixels': round(hough_length),
                     'x1': x1 + lx1,
                     'y1': y1 + ly1,
                     'x2': x1 + lx2,
                     'y2': y1 + ly2,
                     'region': (y1, y2, x1, x2),
-                    'roi': roi.copy()
+                    'roi': roi.copy(),
+                    'method': 'hough'
                 }
     
     return best_result
@@ -379,7 +429,10 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
         
         if detection:
             scale_bar_pixels = detection['length_pixels']
-            print(f"  Detected scale bar: {scale_bar_pixels:.0f} pixels")
+            method = detection.get('method', 'unknown')
+            print(f"  Detected scale bar: {scale_bar_pixels} pixels (method: {method})")
+            if 'hough_length' in detection:
+                print(f"  (Hough estimate was {detection['hough_length']} px, refined to {scale_bar_pixels} px)")
             print(f"  Location: ({detection['x1']:.0f}, {detection['y1']:.0f}) to ({detection['x2']:.0f}, {detection['y2']:.0f})")
             
             # Save scale bar visualization
@@ -396,7 +449,7 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
             
             if not non_interactive:
                 # Ask for confirmation
-                print(f"\n  Detected: {scale_bar_pixels:.0f} pixels = {scale_bar_um} μm")
+                print(f"\n  Detected: {scale_bar_pixels} pixels = {scale_bar_um} μm")
                 response = input("  Is this correct? [Y/n/enter new value]: ").strip()
                 
                 if response.lower() == 'n':
@@ -415,7 +468,7 @@ def analyze_image(image_path, scale_bar_um, scale_bar_pixels=None, output_dir=No
     # Calculate scale
     um_per_pixel = scale_bar_um / scale_bar_pixels
     
-    print(f"\nScale: {um_per_pixel:.4f} μm/pixel ({scale_bar_um} μm = {scale_bar_pixels:.0f} px)")
+    print(f"\nScale: {um_per_pixel:.4f} μm/pixel ({scale_bar_um} μm = {scale_bar_pixels} px)")
     
     # Detect particles
     print("\nDetecting particles...")
