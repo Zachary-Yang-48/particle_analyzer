@@ -12,12 +12,43 @@ A tool for identifying and measuring circular particles in microscopy images wit
 
 ## Installation
 
-1. Install Python 3.7 or higher
+### Prerequisites
 
-2. Install required packages:
-```bash
-pip install -r requirements.txt
-```
+1. Install Python 3.7 or higher
+2. Install [uv](https://github.com/astral-sh/uv) (fast Python package installer):
+   ```bash
+   # Windows (PowerShell)
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   
+   # Mac/Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+### Setup
+
+**Windows users (recommended):**
+1. Double-click `setup_env.bat` to automatically create the environment and install dependencies
+2. Then double-click `launch_gui.bat` to start the application
+
+**Manual setup (all platforms):**
+1. Create virtual environment and install dependencies:
+   ```bash
+   uv venv
+   uv pip install -r requirements.txt
+   ```
+
+   Or in one command:
+   ```bash
+   uv venv && uv pip install -r requirements.txt
+   ```
+
+2. **Windows users**: Double-click `launch_gui.bat`
+
+3. **Mac/Linux users**: Activate the environment and run:
+   ```bash
+   source .venv/bin/activate
+   streamlit run gui_streamlit.py
+   ```
 
 ## Usage
 
