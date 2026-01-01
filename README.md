@@ -2,6 +2,10 @@
 
 A tool for identifying and measuring circular particles in microscopy images with batch processing capabilities.
 
+![before](before.png)
+![after](after.png)
+
+
 ## Features
 
 - 🔬 Automatic particle detection using advanced image processing
