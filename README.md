@@ -3,8 +3,10 @@
 A tool for identifying and measuring circular particles in microscopy images with batch processing capabilities.
 
 ![before](before.png)
-![after](after.png)
+<p style="text-align: center, font-weight: bold;">Before</p>
 
+![after](after.png)
+<p style="text-align: center, font-weight: bold;">After</p>
 
 ## Features
 
